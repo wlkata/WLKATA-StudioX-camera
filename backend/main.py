@@ -1,5 +1,7 @@
 """Camera extension HTTP API."""
 
+import time
+
 from flask import Blueprint, Response, jsonify, request
 
 from camera_manager import CameraManager
@@ -38,6 +40,25 @@ def disconnect():
     except Exception as exc:
         return jsonify({'success': False, 'error': str(exc)}), 500
     return jsonify(result)
+
+
+@blueprint.route('/stream')
+def stream():
+    """MJPEG stream of the active camera. One long request, like cv-pick."""
+    def generate():
+        for _ in range(80):
+            if _manager().latest_jpeg():
+                break
+            time.sleep(0.02)
+        while True:
+            jpeg = _manager().latest_jpeg()
+            if jpeg:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + jpeg + b'\r\n')
+            time.sleep(1.0 / 30)
+
+    return Response(generate(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
 @blueprint.route('/frame')

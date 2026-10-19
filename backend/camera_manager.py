@@ -93,11 +93,19 @@ def _open_capture(index):
     for backend in backends:
         cap = cv2.VideoCapture(int(index), backend)
         if cap is not None and cap.isOpened():
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
             return cap
         if cap is not None:
             cap.release()
     cap = cv2.VideoCapture(int(index))
     if cap is not None and cap.isOpened():
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
         return cap
     if cap is not None:
         cap.release()
@@ -139,10 +147,11 @@ class CameraManager:
         if not self._names or now - self._names_at > 20:
             self._names = _platform_names()
             self._names_at = now
-        count = max(len(self._names), 3)
+        # Only cameras the OS reports. Padding to 3 invented a dead "Camera 2".
+        count = len(self._names)
         cameras = []
         for index in range(count):
-            name = self._names[index] if index < len(self._names) else 'Camera %d' % index
+            name = self._names[index]
             cam = self._cams.get(index)
             cameras.append({
                 'id': index,
@@ -268,4 +277,4 @@ class CameraManager:
                 with self._io:
                     if cam is self._cams.get(cam.index):
                         cam.last_jpeg = buf.tobytes()
-            time.sleep(0.03)
+            time.sleep(0.001)

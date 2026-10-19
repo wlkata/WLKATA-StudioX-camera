@@ -49,18 +49,16 @@
 
   function refreshFrame() {
     if (activeId === null || activeId === undefined) {
+      if (frame) frame.src = '';
       showFrame(false);
       return;
     }
-    var img = new Image();
-    img.onload = function () {
-      frame.src = img.src;
-      showFrame(true);
-    };
-    img.onerror = function () {
-      showFrame(false);
-    };
-    img.src = base + '/frame?t=' + Date.now();
+    var stream = base + '/stream';
+    if (frame && frame.getAttribute('data-stream') !== stream) {
+      frame.setAttribute('data-stream', stream);
+      frame.src = stream;
+    }
+    showFrame(true);
   }
 
   document.getElementById('cam-connect').addEventListener('click', function () {
