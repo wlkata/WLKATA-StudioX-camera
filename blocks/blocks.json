@@ -1,0 +1,53 @@
+[
+  {
+    "type": "camera_capture",
+    "message0": "capture image",
+    "output": null,
+    "colour": 200,
+    "tooltip": "Capture one frame from the active camera.",
+    "pythonImports": [
+      "import json, os, urllib.request\ndef _camera_api(path, body=None):\n    port = os.environ.get('STUDIOX_PORT', '5080')\n    data = None if body is None else json.dumps(body).encode()\n    req = urllib.request.Request('http://127.0.0.1:%s/ext/camera%s' % (port, path), data=data, headers={'Content-Type': 'application/json'}, method='POST')\n    with urllib.request.urlopen(req, timeout=20) as resp:\n        payload = json.loads(resp.read().decode())\n    if not payload.get('success'):\n        raise RuntimeError(payload.get('error') or 'camera request failed')\n    return payload\n"
+    ],
+    "python": "_camera_api('/capture')['image']"
+  },
+  {
+    "type": "camera_resize",
+    "message0": "resize %1 to %2 × %3",
+    "args0": [
+      { "type": "input_value", "name": "IMAGE" },
+      { "type": "field_number", "name": "WIDTH", "value": 320, "min": 1, "max": 4096, "precision": 1 },
+      { "type": "field_number", "name": "HEIGHT", "value": 240, "min": 1, "max": 4096, "precision": 1 }
+    ],
+    "output": null,
+    "colour": 200,
+    "tooltip": "Resize an image to a width and height.",
+    "pythonImports": [
+      "import json, os, urllib.request\ndef _camera_api(path, body=None):\n    port = os.environ.get('STUDIOX_PORT', '5080')\n    data = None if body is None else json.dumps(body).encode()\n    req = urllib.request.Request('http://127.0.0.1:%s/ext/camera%s' % (port, path), data=data, headers={'Content-Type': 'application/json'}, method='POST')\n    with urllib.request.urlopen(req, timeout=20) as resp:\n        payload = json.loads(resp.read().decode())\n    if not payload.get('success'):\n        raise RuntimeError(payload.get('error') or 'camera request failed')\n    return payload\n"
+    ],
+    "python": "_camera_api('/resize', {'image': {IMAGE}, 'width': {WIDTH}, 'height': {HEIGHT}})['image']"
+  },
+  {
+    "type": "camera_convert",
+    "message0": "convert %1 to %2",
+    "args0": [
+      { "type": "input_value", "name": "IMAGE" },
+      {
+        "type": "field_dropdown",
+        "name": "MODE",
+        "options": [
+          ["RGB", "RGB"],
+          ["BGR", "BGR"],
+          ["Gray", "GRAY"],
+          ["HSV", "HSV"]
+        ]
+      }
+    ],
+    "output": null,
+    "colour": 200,
+    "tooltip": "Convert an image to RGB, BGR, gray, or HSV.",
+    "pythonImports": [
+      "import json, os, urllib.request\ndef _camera_api(path, body=None):\n    port = os.environ.get('STUDIOX_PORT', '5080')\n    data = None if body is None else json.dumps(body).encode()\n    req = urllib.request.Request('http://127.0.0.1:%s/ext/camera%s' % (port, path), data=data, headers={'Content-Type': 'application/json'}, method='POST')\n    with urllib.request.urlopen(req, timeout=20) as resp:\n        payload = json.loads(resp.read().decode())\n    if not payload.get('success'):\n        raise RuntimeError(payload.get('error') or 'camera request failed')\n    return payload\n"
+    ],
+    "python": "_camera_api('/convert', {'image': {IMAGE}, 'mode': {MODE}})['image']"
+  }
+]

@@ -1,0 +1,23 @@
+{
+  "name": "camera",
+  "displayName": "Camera",
+  "version": "1.0.0",
+  "description": "Camera manager, live preview window, and image blocks.",
+  "permissions": ["camera"],
+  "contributes": {
+    "backend": {
+      "main": "backend/main.py"
+    },
+    "blocks": {
+      "category": "Camera",
+      "colour": "#4B8BBE",
+      "files": ["blocks/blocks.json"]
+    },
+    "window": {
+      "title": "Camera",
+      "html": "frontend/window.html",
+      "js": "frontend/window.js",
+      "css": "frontend/window.css"
+    }
+  }
+}
