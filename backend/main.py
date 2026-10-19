@@ -71,10 +71,30 @@ def frame():
 
 @blueprint.route('/capture', methods=['POST'])
 def capture():
+    data = request.get_json(silent=True) or {}
     try:
-        return jsonify(_manager().capture())
+        return jsonify(_manager().capture(data.get('id')))
     except Exception as exc:
         return jsonify({'success': False, 'error': str(exc)}), 400
+
+
+@blueprint.route('/preview', methods=['POST'])
+def preview():
+    data = request.get_json(silent=True) or {}
+    try:
+        if data.get('frames') is not None:
+            _manager().set_previews(data.get('frames'))
+        else:
+            _manager().set_preview(data.get('slot') or 1, data.get('image') or '')
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    return jsonify({'success': True})
+
+
+@blueprint.route('/previews')
+def previews():
+    payload = _manager().previews()
+    return jsonify({'success': True, 'rev': payload['rev'], 'frames': payload['frames']})
 
 
 @blueprint.route('/resize', methods=['POST'])

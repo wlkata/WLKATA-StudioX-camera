@@ -1,30 +1,39 @@
 [
   {
     "type": "camera_capture",
-    "message0": "capture image",
+    "message0": "capture from %1",
+    "args0": [
+      {
+        "type": "field_dropdown",
+        "name": "CAMERA",
+        "options": [["Camera", "0"]],
+        "source": "cameras"
+      }
+    ],
     "output": null,
     "colour": 200,
-    "tooltip": "Capture one frame from the active camera.",
+    "tooltip": "Capture one frame. The menu shows the camera name; the code uses its index.",
     "pythonImports": [
-      "import json, os, urllib.request\ndef _camera_api(path, body=None):\n    port = os.environ.get('STUDIOX_PORT', '5080')\n    data = None if body is None else json.dumps(body).encode()\n    req = urllib.request.Request('http://127.0.0.1:%s/ext/camera%s' % (port, path), data=data, headers={'Content-Type': 'application/json'}, method='POST')\n    with urllib.request.urlopen(req, timeout=20) as resp:\n        payload = json.loads(resp.read().decode())\n    if not payload.get('success'):\n        raise RuntimeError(payload.get('error') or 'camera request failed')\n    return payload\n"
+      "import cv2",
+      "cap_{CAMERA} = cv2.VideoCapture({CAMERA})",
+      "cap_{CAMERA}.set(cv2.CAP_PROP_BUFFERSIZE, 1)",
+      "for _warm_{CAMERA} in range(30):\n    if cap_{CAMERA}.read()[0]:\n        break"
     ],
-    "python": "_camera_api('/capture')['image']"
+    "python": "cap_{CAMERA}.read()[1]"
   },
   {
     "type": "camera_resize",
     "message0": "resize %1 to %2 × %3",
     "args0": [
       { "type": "input_value", "name": "IMAGE" },
-      { "type": "field_number", "name": "WIDTH", "value": 320, "min": 1, "max": 4096, "precision": 1 },
-      { "type": "field_number", "name": "HEIGHT", "value": 240, "min": 1, "max": 4096, "precision": 1 }
+      { "type": "field_number", "name": "WIDTH", "value": 1024, "min": 1, "max": 4096, "precision": 1 },
+      { "type": "field_number", "name": "HEIGHT", "value": 1024, "min": 1, "max": 4096, "precision": 1 }
     ],
     "output": null,
     "colour": 200,
     "tooltip": "Resize an image to a width and height.",
-    "pythonImports": [
-      "import json, os, urllib.request\ndef _camera_api(path, body=None):\n    port = os.environ.get('STUDIOX_PORT', '5080')\n    data = None if body is None else json.dumps(body).encode()\n    req = urllib.request.Request('http://127.0.0.1:%s/ext/camera%s' % (port, path), data=data, headers={'Content-Type': 'application/json'}, method='POST')\n    with urllib.request.urlopen(req, timeout=20) as resp:\n        payload = json.loads(resp.read().decode())\n    if not payload.get('success'):\n        raise RuntimeError(payload.get('error') or 'camera request failed')\n    return payload\n"
-    ],
-    "python": "_camera_api('/resize', {'image': {IMAGE}, 'width': {WIDTH}, 'height': {HEIGHT}})['image']"
+    "pythonImports": ["import cv2"],
+    "python": "cv2.resize({IMAGE}, ({WIDTH}, {HEIGHT}))"
   },
   {
     "type": "camera_convert",
@@ -35,19 +44,32 @@
         "type": "field_dropdown",
         "name": "MODE",
         "options": [
+          ["Gray", "GRAY"],
           ["RGB", "RGB"],
           ["BGR", "BGR"],
-          ["Gray", "GRAY"],
           ["HSV", "HSV"]
-        ]
+        ],
+        "unquoted": true
       }
     ],
     "output": null,
     "colour": 200,
     "tooltip": "Convert an image to RGB, BGR, gray, or HSV.",
-    "pythonImports": [
-      "import json, os, urllib.request\ndef _camera_api(path, body=None):\n    port = os.environ.get('STUDIOX_PORT', '5080')\n    data = None if body is None else json.dumps(body).encode()\n    req = urllib.request.Request('http://127.0.0.1:%s/ext/camera%s' % (port, path), data=data, headers={'Content-Type': 'application/json'}, method='POST')\n    with urllib.request.urlopen(req, timeout=20) as resp:\n        payload = json.loads(resp.read().decode())\n    if not payload.get('success'):\n        raise RuntimeError(payload.get('error') or 'camera request failed')\n    return payload\n"
+    "pythonImports": ["import cv2"],
+    "python": "cv2.cvtColor({IMAGE}, cv2.COLOR_BGR2{MODE})"
+  },
+  {
+    "type": "camera_preview",
+    "message0": "preview %1 in slot %2",
+    "args0": [
+      { "type": "input_value", "name": "IMAGE" },
+      { "type": "field_number", "name": "SLOT", "value": 1, "min": 1, "max": 12, "precision": 1 }
     ],
-    "python": "_camera_api('/convert', {'image': {IMAGE}, 'mode': {MODE}})['image']"
+    "previousStatement": null,
+    "nextStatement": null,
+    "colour": 200,
+    "tooltip": "Show this frame in the Camera preview tab. This block does not add Python.",
+    "pythonHidden": true,
+    "python": "__studiox_preview({IMAGE}, {SLOT})\n"
   }
 ]

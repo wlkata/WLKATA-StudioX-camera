@@ -141,6 +141,7 @@ class CameraManager:
         self._thread = None
         self._names = []
         self._names_at = 0.0
+        self._previews = {}
 
     def list_cameras(self):
         now = time.monotonic()
@@ -211,16 +212,25 @@ class CameraManager:
                 return None
             return cam.last_jpeg
 
-    def capture(self):
-        with self._io:
-            cam = self._cams.get(self._active) if self._active is not None else None
-            if not cam or not cam.connected:
-                raise RuntimeError('No camera is connected')
-            frame = None if cam.last_frame is None else cam.last_frame.copy()
-            if frame is None and cam.cap is not None:
-                ok, frame = cam.cap.read()
-                if not ok:
-                    frame = None
+    def capture(self, index=None):
+        if index is not None and index != '':
+            opened = self.connect(int(index))
+            if not opened.get('success'):
+                raise RuntimeError(opened.get('error') or 'Could not open camera')
+        frame = None
+        for _ in range(40):
+            with self._io:
+                cam = self._cams.get(self._active) if self._active is not None else None
+                if cam and cam.connected:
+                    if cam.last_frame is not None:
+                        frame = cam.last_frame.copy()
+                    elif cam.cap is not None:
+                        ok, grabbed = cam.cap.read()
+                        if ok:
+                            frame = grabbed
+            if frame is not None:
+                break
+            time.sleep(0.03)
         if frame is None:
             raise RuntimeError('Camera has no frame yet')
         height, width = frame.shape[:2]
@@ -247,6 +257,26 @@ class CameraManager:
         if code is not None:
             frame = cv2.cvtColor(frame, code)
         return {'success': True, 'image': _encode_png(frame), 'mode': mode}
+
+    def set_preview(self, slot, image):
+        self._previews[int(slot)] = image or ''
+        self._preview_rev = getattr(self, '_preview_rev', 0) + 1
+
+    def set_previews(self, frames):
+        for item in frames or []:
+            if not item:
+                continue
+            self.set_preview(item.get('slot') or 1, item.get('image') or '')
+
+    def previews(self):
+        return {
+            'rev': getattr(self, '_preview_rev', 0),
+            'frames': [
+                {'slot': slot, 'image': image}
+                for slot, image in sorted(self._previews.items())
+                if image
+            ],
+        }
 
     def _ensure_reader(self):
         if self._thread and self._thread.is_alive():
