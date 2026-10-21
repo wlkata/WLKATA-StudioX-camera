@@ -25,7 +25,7 @@ def connect():
     if data.get('id') is None:
         return jsonify({'success': False, 'error': 'id is required'}), 400
     try:
-        result = _manager().connect(data.get('id'))
+        result = _manager().acquire(data.get('id'), data.get('client') or 'window')
     except Exception as exc:
         return jsonify({'success': False, 'error': str(exc)}), 500
     status = 200 if result.get('success') else 400
@@ -36,22 +36,34 @@ def connect():
 def disconnect():
     data = request.get_json(silent=True) or {}
     try:
-        result = _manager().disconnect(data.get('id'))
+        result = _manager().release(data.get('id'), data.get('client') or 'window')
     except Exception as exc:
         return jsonify({'success': False, 'error': str(exc)}), 500
     return jsonify(result)
 
 
+def _camera_index():
+    raw = request.args.get('id')
+    if raw is None or raw == '':
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 @blueprint.route('/stream')
 def stream():
-    """MJPEG stream of the active camera. One long request, like cv-pick."""
+    """MJPEG of one shared capture."""
+    index = _camera_index()
+
     def generate():
         for _ in range(80):
-            if _manager().latest_jpeg():
+            if _manager().latest_jpeg(index):
                 break
             time.sleep(0.02)
         while True:
-            jpeg = _manager().latest_jpeg()
+            jpeg = _manager().latest_jpeg(index)
             if jpeg:
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + jpeg + b'\r\n')
@@ -63,7 +75,7 @@ def stream():
 
 @blueprint.route('/frame')
 def frame():
-    jpeg = _manager().latest_jpeg()
+    jpeg = _manager().latest_jpeg(_camera_index())
     if not jpeg:
         return jsonify({'success': False, 'error': 'No camera frame'}), 404
     return Response(jpeg, mimetype='image/jpeg')

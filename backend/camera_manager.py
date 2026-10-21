@@ -118,6 +118,8 @@ class _Camera:
         self.name = name
         self.cap = None
         self.connected = False
+        self.holders = set()
+        self.busy = False
         self.last_frame = None
         self.last_jpeg = None
         self.width = 0
@@ -154,67 +156,102 @@ class CameraManager:
         for index in range(count):
             name = self._names[index]
             cam = self._cams.get(index)
+            holders = cam.holders if cam and cam.connected else set()
             cameras.append({
                 'id': index,
                 'name': name,
-                'connected': bool(cam and cam.connected),
-                'active': self._active == index,
+                'in_use': bool(holders),
+                'window': 'window' in holders,
+                'program': any(str(h).startswith('program') for h in holders),
             })
-        return {'cameras': cameras, 'active': self._active}
+        return {'cameras': cameras}
 
-    def connect(self, index):
+    def acquire(self, index, client):
+        """Register ``client`` as a user of this camera. Open the device once."""
         index = int(index)
+        client = str(client or 'window')
+        with self._io:
+            existing = self._cams.get(index)
+            if existing and existing.connected and existing.cap is not None:
+                existing.holders.add(client)
+                self._active = index
+                return {'success': True, 'id': index, 'name': existing.name}
         info = self.list_cameras()
         name = 'Camera %d' % index
-        for cam in info['cameras']:
-            if cam['id'] == index:
-                name = cam['name']
+        for item in info['cameras']:
+            if item['id'] == index:
+                name = item['name']
                 break
         cap = _open_capture(index)
         if cap is None:
             return {'success': False, 'error': 'Could not open camera %d' % index}
+        extra = None
         with self._io:
-            old = self._cams.get(index)
-            if old and old.cap is not None:
-                old.cap.release()
-            cam = _Camera(index, name)
-            cam.cap = cap
-            cam.connected = True
-            self._cams[index] = cam
-            self._active = index
+            existing = self._cams.get(index)
+            if existing and existing.connected and existing.cap is not None:
+                existing.holders.add(client)
+                self._active = index
+                name = existing.name
+                extra = cap
+            else:
+                cam = _Camera(index, name)
+                cam.cap = cap
+                cam.connected = True
+                cam.holders = set([client])
+                self._cams[index] = cam
+                self._active = index
+        if extra is not None:
+            extra.release()
         self._ensure_reader()
         return {'success': True, 'id': index, 'name': name}
 
-    def disconnect(self, index=None):
+    def release(self, index, client):
+        """Drop one client. Close the device only when nobody remains."""
+        if index is None:
+            return {'success': True}
+        index = int(index)
+        client = str(client or 'window')
         with self._io:
-            if index is None:
-                index = self._active
-            if index is None:
-                return {'success': True}
-            index = int(index)
             cam = self._cams.get(index)
-            if cam and cam.cap is not None:
-                cam.cap.release()
-                cam.cap = None
-                cam.connected = False
+            if not cam:
+                return {'success': True}
+            cam.holders.discard(client)
+            if cam.holders:
+                return {'success': True}
+            cam.connected = False
+            cap = cam.cap
+            cam.cap = None
+            cam.last_frame = None
+            cam.last_jpeg = None
             if self._active == index:
                 self._active = None
                 for other, conn in self._cams.items():
-                    if conn.connected:
+                    if conn.connected and conn.cap is not None:
                         self._active = other
                         break
-        return {'success': True, 'active': self._active}
+        deadline = time.monotonic() + 2.0
+        while getattr(cam, 'busy', False) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+        return {'success': True}
 
-    def latest_jpeg(self):
+    def latest_jpeg(self, index=None):
         with self._io:
-            cam = self._cams.get(self._active) if self._active is not None else None
+            if index is None:
+                cam = self._cams.get(self._active) if self._active is not None else None
+            else:
+                cam = self._cams.get(int(index))
             if not cam or not cam.connected:
                 return None
             return cam.last_jpeg
 
     def capture(self, index=None):
         if index is not None and index != '':
-            opened = self.connect(int(index))
+            opened = self.acquire(int(index), 'program-capture')
             if not opened.get('success'):
                 raise RuntimeError(opened.get('error') or 'Could not open camera')
         frame = None
@@ -288,23 +325,35 @@ class CameraManager:
     def _read_loop(self):
         while not self._stop.is_set():
             with self._io:
-                cam = self._cams.get(self._active) if self._active is not None else None
-                cap = cam.cap if cam and cam.connected else None
-                if cap is None:
-                    frame = None
-                else:
-                    ok, frame = cap.read()
-                    if not ok:
-                        frame = None
-                if frame is not None and cam is not None:
-                    cam.last_frame = frame
-                    cam.height, cam.width = frame.shape[:2]
-            if frame is None:
-                time.sleep(0.08)
+                cams = [c for c in self._cams.values() if c.connected and c.cap is not None]
+            if not cams:
+                time.sleep(0.05)
                 continue
-            ok, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-            if ok:
+            for cam in cams:
                 with self._io:
-                    if cam is self._cams.get(cam.index):
-                        cam.last_jpeg = buf.tobytes()
+                    if not cam.connected or cam.cap is None:
+                        continue
+                    cap = cam.cap
+                    cam.busy = True
+                try:
+                    ok, frame = cap.read()
+                except Exception:
+                    ok, frame = False, None
+                finally:
+                    with self._io:
+                        cam.busy = False
+                if not ok or frame is None:
+                    continue
+                try:
+                    encoded, buf = cv2.imencode(
+                        '.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    jpeg = buf.tobytes() if encoded else None
+                except Exception:
+                    jpeg = None
+                with self._io:
+                    if cam.connected and cam.cap is cap:
+                        cam.last_frame = frame
+                        cam.height, cam.width = frame.shape[:2]
+                        if jpeg is not None:
+                            cam.last_jpeg = jpeg
             time.sleep(0.001)

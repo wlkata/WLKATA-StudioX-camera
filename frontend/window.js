@@ -2,10 +2,18 @@
   var port = window.STUDIOX_PORT || '5080';
   var base = 'http://127.0.0.1:' + port + '/ext/camera';
   var select = document.getElementById('cam-select');
+  var connectBtn = document.getElementById('cam-connect');
+  var disconnectBtn = document.getElementById('cam-disconnect');
   var statusEl = document.getElementById('cam-status');
   var frame = document.getElementById('cam-frame');
   var empty = document.getElementById('cam-empty');
-  var activeId = null;
+  var windowId = null;
+
+  function setConnected(on) {
+    if (select) select.disabled = on;
+    if (connectBtn) connectBtn.disabled = on;
+    if (disconnectBtn) disconnectBtn.disabled = !on;
+  }
 
   function setStatus(text) {
     if (statusEl) statusEl.textContent = text;
@@ -22,24 +30,35 @@
       .then(function (data) {
         if (!data || !data.success) return;
         var selected = select.value;
+        var names = {};
         select.innerHTML = '';
         (data.cameras || []).forEach(function (cam) {
           var opt = document.createElement('option');
           opt.value = String(cam.id);
-          opt.textContent = cam.name + (cam.connected ? ' (connected)' : '');
+          var note = cam.program ? ' (in use by program)' : '';
+          opt.textContent = cam.name + note;
           select.appendChild(opt);
+          names[String(cam.id)] = cam.name;
         });
-        activeId = data.active;
-        if (activeId !== null && activeId !== undefined) {
-          select.value = String(activeId);
-        } else if (selected) {
-          select.value = selected;
-        }
-        if (activeId === null || activeId === undefined) {
-          setStatus('No camera connected');
-          showFrame(false);
+        if (windowId !== null) {
+          select.value = String(windowId);
+          setConnected(true);
+          setStatus('Showing ' + (names[String(windowId)] || ('camera ' + windowId)));
+          var stream = base + '/stream?id=' + windowId;
+          if (frame && frame.getAttribute('data-stream') !== stream) {
+            frame.setAttribute('data-stream', stream);
+            frame.src = stream;
+            showFrame(true);
+          }
         } else {
-          setStatus('Showing camera ' + activeId);
+          if (selected) select.value = selected;
+          setConnected(false);
+          setStatus('No camera connected');
+          if (frame) {
+            frame.removeAttribute('src');
+            frame.removeAttribute('data-stream');
+          }
+          showFrame(false);
         }
       })
       .catch(function () {
@@ -47,43 +66,47 @@
       });
   }
 
-  function refreshFrame() {
-    if (activeId === null || activeId === undefined) {
-      if (frame) frame.removeAttribute('src');
-      showFrame(false);
-      return;
-    }
-    var loader = new Image();
-    loader.onload = function () {
-      if (frame) frame.src = loader.src;
-      showFrame(true);
-    };
-    loader.src = base + '/frame?t=' + Date.now();
-  }
-
-  document.getElementById('cam-connect').addEventListener('click', function () {
+  connectBtn.addEventListener('click', function () {
     fetch(base + '/connect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: Number(select.value) })
+      body: JSON.stringify({ id: Number(select.value), client: 'window' })
     })
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        if (!data.success) setStatus(data.error || 'Connect failed');
+        if (!data.success) {
+          setStatus(data.error || 'Connect failed');
+        } else {
+          windowId = String(data.id);
+        }
         refreshList();
       })
       .catch(function () { setStatus('Connect failed'); });
   });
 
-  document.getElementById('cam-disconnect').addEventListener('click', function () {
+  disconnectBtn.addEventListener('click', function () {
     fetch(base + '/disconnect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: Number(select.value) })
-    }).then(function () { refreshList(); });
+      body: JSON.stringify({ id: Number(windowId), client: 'window' })
+    }).then(function () {
+      windowId = null;
+      refreshList();
+    });
+  });
+
+  window.addEventListener('beforeunload', function () {
+    if (windowId === null) return;
+    try {
+      fetch(base + '/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: Number(windowId), client: 'window' }),
+        keepalive: true
+      });
+    } catch (e) { /* ignore */ }
   });
 
   refreshList();
   setInterval(refreshList, 2000);
-  setInterval(refreshFrame, 150);
 })();

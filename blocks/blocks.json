@@ -1,25 +1,42 @@
 [
   {
-    "type": "camera_capture",
-    "message0": "capture from %1",
+    "type": "camera_setup",
+    "message0": "setup camera %1 as %2",
     "args0": [
       {
         "type": "field_dropdown",
         "name": "CAMERA",
         "options": [["Camera", "0"]],
         "source": "cameras"
+      },
+      {
+        "type": "field_variable",
+        "name": "CAP",
+        "variable": "cap"
+      }
+    ],
+    "previousStatement": null,
+    "nextStatement": null,
+    "colour": 200,
+    "tooltip": "Open this camera once. Capture blocks read from the variable.",
+    "pythonImports": ["import cv2"],
+    "python": "{CAP} = cv2.VideoCapture({CAMERA})\n"
+  },
+  {
+    "type": "camera_capture",
+    "message0": "capture from %1",
+    "args0": [
+      {
+        "type": "field_variable",
+        "name": "CAP",
+        "variable": "cap"
       }
     ],
     "output": null,
     "colour": 200,
-    "tooltip": "Capture one frame. The menu shows the camera name; the code uses its index.",
-    "pythonImports": [
-      "import cv2",
-      "cap_{CAMERA} = cv2.VideoCapture({CAMERA})",
-      "cap_{CAMERA}.set(cv2.CAP_PROP_BUFFERSIZE, 1)",
-      "for _warm_{CAMERA} in range(30):\n    if cap_{CAMERA}.read()[0]:\n        break"
-    ],
-    "python": "cap_{CAMERA}.read()[1]"
+    "tooltip": "Read one frame from a camera opened by setup camera.",
+    "pythonImports": ["import cv2"],
+    "python": "{CAP}.read()[1]"
   },
   {
     "type": "camera_resize",
