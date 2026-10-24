@@ -27,6 +27,9 @@
         "cacheMs": 20000
       }
     },
+    "runtime": {
+      "python": "runtime/adapter.py"
+    },
     "window": {
       "title": "Camera",
       "html": "frontend/window.html",

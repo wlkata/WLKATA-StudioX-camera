@@ -19,8 +19,7 @@
     "nextStatement": null,
     "colour": 200,
     "tooltip": "Open this camera once. Capture blocks read from the variable.",
-    "pythonImports": ["import cv2"],
-    "python": "{CAP} = cv2.VideoCapture({CAMERA})\n"
+    "python": "{CAP} = __studiox_extensions['camera'].open_camera({CAMERA})\n"
   },
   {
     "type": "camera_capture",
