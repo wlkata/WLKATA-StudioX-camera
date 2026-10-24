@@ -8,6 +8,7 @@
   var frame = document.getElementById('cam-frame');
   var empty = document.getElementById('cam-empty');
   var windowId = null;
+  var listRequest = null;
 
   function setConnected(on) {
     if (select) select.disabled = on;
@@ -24,8 +25,10 @@
     if (empty) empty.style.display = on ? 'none' : 'block';
   }
 
-  function refreshList() {
-    fetch(base + '/cameras')
+  function refreshList(refreshDevices) {
+    if (listRequest) return listRequest;
+    var query = refreshDevices ? '?refresh=1' : '';
+    listRequest = fetch(base + '/cameras' + query)
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data || !data.success) return;
@@ -63,7 +66,18 @@
       })
       .catch(function () {
         setStatus('Camera backend is not running');
+      })
+      .then(function () {
+        listRequest = null;
       });
+    return listRequest;
+  }
+
+  function stopStream() {
+    if (!frame) return;
+    frame.removeAttribute('src');
+    frame.removeAttribute('data-stream');
+    showFrame(false);
   }
 
   connectBtn.addEventListener('click', function () {
@@ -79,19 +93,24 @@
         } else {
           windowId = String(data.id);
         }
-        refreshList();
+        refreshList(true);
       })
       .catch(function () { setStatus('Connect failed'); });
   });
 
   disconnectBtn.addEventListener('click', function () {
+    var id = windowId;
+    windowId = null;
+    stopStream();
+    setConnected(false);
+    setStatus('No camera connected');
+    if (id === null) return;
     fetch(base + '/disconnect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: Number(windowId), client: 'window' })
+      body: JSON.stringify({ id: Number(id), client: 'window' })
     }).then(function () {
-      windowId = null;
-      refreshList();
+      refreshList(true);
     });
   });
 
@@ -107,6 +126,5 @@
     } catch (e) { /* ignore */ }
   });
 
-  refreshList();
-  setInterval(refreshList, 2000);
+  refreshList(true);
 })();

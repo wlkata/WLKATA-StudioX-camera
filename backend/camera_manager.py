@@ -8,11 +8,23 @@ block both read that active camera.
 import json
 import platform
 import subprocess
+import sys
 import threading
 import time
 
 import cv2
 import numpy as np
+
+
+def _lifecycle(event, **fields):
+    """One line per open, release, or enumeration. Not used on each frame."""
+    parts = [time.strftime('%H:%M:%S'), event]
+    for key in sorted(fields):
+        parts.append('%s=%s' % (key, fields[key]))
+    stream = getattr(sys, '__stderr__', None)
+    if stream is None:
+        return
+    print('[camera] ' + ' '.join(parts), file=stream, flush=True)
 
 
 _CONVERT = {
@@ -84,12 +96,14 @@ def _platform_names():
 
 
 def _open_capture(index):
+    """Open one device. Callers must release() it. Listing cameras does not call this."""
     system = platform.system()
     backends = []
     if system == 'Windows':
         backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF]
     elif system == 'Darwin':
         backends = [cv2.CAP_AVFOUNDATION]
+    _lifecycle('open-begin', index=index)
     for backend in backends:
         cap = cv2.VideoCapture(int(index), backend)
         if cap is not None and cap.isOpened():
@@ -97,19 +111,34 @@ def _open_capture(index):
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             except Exception:
                 pass
+            _lifecycle('open', index=index, backend=backend)
             return cap
         if cap is not None:
             cap.release()
+            _lifecycle('release', index=index, reason='backend-rejected', backend=backend)
     cap = cv2.VideoCapture(int(index))
     if cap is not None and cap.isOpened():
         try:
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         except Exception:
             pass
+        _lifecycle('open', index=index, backend='default')
         return cap
     if cap is not None:
         cap.release()
+        _lifecycle('release', index=index, reason='open-failed')
+    _lifecycle('open-failed', index=index)
     return None
+
+
+def _release_capture(cap, index, reason):
+    if cap is None:
+        return
+    try:
+        cap.release()
+    except Exception:
+        pass
+    _lifecycle('release', index=index, reason=reason)
 
 
 class _Camera:
@@ -124,6 +153,7 @@ class _Camera:
         self.last_jpeg = None
         self.width = 0
         self.height = 0
+        self.drop_cap = None
 
 
 class CameraManager:
@@ -139,22 +169,30 @@ class CameraManager:
         self._cams = {}
         self._active = None
         self._io = threading.Lock()
+        self._idle = threading.Condition(self._io)
         self._stop = threading.Event()
         self._thread = None
-        self._names = []
+        self._names = None
         self._names_at = 0.0
         self._previews = {}
 
-    def list_cameras(self):
-        now = time.monotonic()
-        if not self._names or now - self._names_at > 20:
-            self._names = _platform_names()
-            self._names_at = now
+    def list_cameras(self, refresh=False):
+        """Return the cached device list.
+
+        ``refresh=True`` asks the OS for names. That is discovery, not a
+        capture. An ordinary list call never opens a camera and never
+        repeats discovery on its own.
+        """
+        if refresh:
+            self._names = _platform_names() or []
+            self._names_at = time.monotonic()
+            _lifecycle('enumerate', count=len(self._names))
+        names = self._names or []
         # Only cameras the OS reports. Padding to 3 invented a dead "Camera 2".
-        count = len(self._names)
+        count = len(names)
         cameras = []
         for index in range(count):
-            name = self._names[index]
+            name = names[index]
             cam = self._cams.get(index)
             holders = cam.holders if cam and cam.connected else set()
             cameras.append({
@@ -175,8 +213,9 @@ class CameraManager:
             if existing and existing.connected and existing.cap is not None:
                 existing.holders.add(client)
                 self._active = index
+                _lifecycle('acquire', index=index, client=client, holders=len(existing.holders))
                 return {'success': True, 'id': index, 'name': existing.name}
-        info = self.list_cameras()
+        info = self.list_cameras(refresh=True)
         name = 'Camera %d' % index
         for item in info['cameras']:
             if item['id'] == index:
@@ -184,6 +223,7 @@ class CameraManager:
                 break
         cap = _open_capture(index)
         if cap is None:
+            _lifecycle('acquire-failed', index=index, client=client)
             return {'success': False, 'error': 'Could not open camera %d' % index}
         extra = None
         with self._io:
@@ -201,21 +241,29 @@ class CameraManager:
                 self._cams[index] = cam
                 self._active = index
         if extra is not None:
-            extra.release()
+            _release_capture(extra, index, 'duplicate-open')
+        _lifecycle('acquire', index=index, client=client, holders=len(self._cams[index].holders))
         self._ensure_reader()
         return {'success': True, 'id': index, 'name': name}
 
     def release(self, index, client):
-        """Drop one client. Close the device only when nobody remains."""
+        """Drop one client. Close the device only when nobody remains.
+
+        If the reader is inside ``read()``, it releases the device when that
+        call returns. This method does not call ``release()`` on a capture
+        that another thread is reading.
+        """
         if index is None:
             return {'success': True}
         index = int(index)
         client = str(client or 'window')
-        with self._io:
+        to_release = None
+        with self._idle:
             cam = self._cams.get(index)
-            if not cam:
+            if not cam or client not in cam.holders:
                 return {'success': True}
             cam.holders.discard(client)
+            _lifecycle('release-client', index=index, client=client, holders=len(cam.holders))
             if cam.holders:
                 return {'success': True}
             cam.connected = False
@@ -223,20 +271,18 @@ class CameraManager:
             cam.cap = None
             cam.last_frame = None
             cam.last_jpeg = None
+            if cam.busy and cap is not None:
+                cam.drop_cap = cap
+            else:
+                to_release = cap
             if self._active == index:
                 self._active = None
                 for other, conn in self._cams.items():
                     if conn.connected and conn.cap is not None:
                         self._active = other
                         break
-        deadline = time.monotonic() + 2.0
-        while getattr(cam, 'busy', False) and time.monotonic() < deadline:
-            time.sleep(0.01)
-        if cap is not None:
-            try:
-                cap.release()
-            except Exception:
-                pass
+            self._idle.notify_all()
+        _release_capture(to_release, index, 'last-client')
         return {'success': True}
 
     def latest_jpeg(self, index=None):
@@ -250,33 +296,36 @@ class CameraManager:
             return cam.last_jpeg
 
     def capture(self, index=None):
+        client = None
+        opened_index = None
         if index is not None and index != '':
-            opened = self.acquire(int(index), 'program-capture')
+            opened_index = int(index)
+            client = 'program-capture-%s' % time.monotonic_ns()
+            opened = self.acquire(opened_index, client)
             if not opened.get('success'):
                 raise RuntimeError(opened.get('error') or 'Could not open camera')
-        frame = None
-        for _ in range(40):
-            with self._io:
-                cam = self._cams.get(self._active) if self._active is not None else None
-                if cam and cam.connected:
-                    if cam.last_frame is not None:
+        try:
+            frame = None
+            for _ in range(40):
+                with self._io:
+                    cam = self._cams.get(self._active) if self._active is not None else None
+                    if cam and cam.connected and cam.last_frame is not None:
                         frame = cam.last_frame.copy()
-                    elif cam.cap is not None:
-                        ok, grabbed = cam.cap.read()
-                        if ok:
-                            frame = grabbed
-            if frame is not None:
-                break
-            time.sleep(0.03)
-        if frame is None:
-            raise RuntimeError('Camera has no frame yet')
-        height, width = frame.shape[:2]
-        return {
-            'success': True,
-            'image': _encode_png(frame),
-            'width': int(width),
-            'height': int(height),
-        }
+                if frame is not None:
+                    break
+                time.sleep(0.03)
+            if frame is None:
+                raise RuntimeError('Camera has no frame yet')
+            height, width = frame.shape[:2]
+            return {
+                'success': True,
+                'image': _encode_png(frame),
+                'width': int(width),
+                'height': int(height),
+            }
+        finally:
+            if client is not None:
+                self.release(opened_index, client)
 
     def resize(self, image, width, height):
         frame = _decode_png(image)
@@ -316,44 +365,69 @@ class CameraManager:
         }
 
     def _ensure_reader(self):
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._read_loop, name='camera-reader', daemon=True)
-        self._thread.start()
+        with self._io:
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop.clear()
+            self._thread = threading.Thread(
+                target=self._read_loop, name='camera-reader', daemon=True)
+            self._thread.start()
+            _lifecycle('reader-start')
 
     def _read_loop(self):
-        while not self._stop.is_set():
-            with self._io:
-                cams = [c for c in self._cams.values() if c.connected and c.cap is not None]
-            if not cams:
-                time.sleep(0.05)
-                continue
-            for cam in cams:
+        me = threading.current_thread()
+        try:
+            while not self._stop.is_set():
                 with self._io:
-                    if not cam.connected or cam.cap is None:
-                        continue
-                    cap = cam.cap
-                    cam.busy = True
-                try:
-                    ok, frame = cap.read()
-                except Exception:
-                    ok, frame = False, None
-                finally:
+                    cams = [
+                        c for c in self._cams.values()
+                        if c.connected and c.cap is not None
+                    ]
+                if not cams:
                     with self._io:
-                        cam.busy = False
-                if not ok or frame is None:
-                    continue
-                try:
-                    encoded, buf = cv2.imencode(
-                        '.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                    jpeg = buf.tobytes() if encoded else None
-                except Exception:
-                    jpeg = None
-                with self._io:
-                    if cam.connected and cam.cap is cap:
-                        cam.last_frame = frame
-                        cam.height, cam.width = frame.shape[:2]
-                        if jpeg is not None:
-                            cam.last_jpeg = jpeg
-            time.sleep(0.001)
+                        if any(c.connected and c.cap is not None for c in self._cams.values()):
+                            continue
+                        if self._thread is me:
+                            self._thread = None
+                        _lifecycle('reader-stop', reason='idle')
+                        return
+                for cam in cams:
+                    with self._io:
+                        if not cam.connected or cam.cap is None:
+                            continue
+                        cap = cam.cap
+                        cam.busy = True
+                    drop = None
+                    try:
+                        ok, frame = cap.read()
+                    except Exception:
+                        ok, frame = False, None
+                    finally:
+                        with self._idle:
+                            cam.busy = False
+                            if cam.drop_cap is cap:
+                                drop = cap
+                                cam.drop_cap = None
+                            self._idle.notify_all()
+                    if drop is not None:
+                        _release_capture(drop, cam.index, 'reader')
+                        continue
+                    if not ok or frame is None:
+                        continue
+                    try:
+                        encoded, buf = cv2.imencode(
+                            '.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                        jpeg = buf.tobytes() if encoded else None
+                    except Exception:
+                        jpeg = None
+                    with self._io:
+                        if cam.connected and cam.cap is cap:
+                            cam.last_frame = frame
+                            cam.height, cam.width = frame.shape[:2]
+                            if jpeg is not None:
+                                cam.last_jpeg = jpeg
+                time.sleep(0.001)
+        finally:
+            with self._io:
+                if self._thread is me:
+                    self._thread = None

@@ -15,7 +15,8 @@ def _manager():
 
 @blueprint.route('/cameras')
 def cameras():
-    info = _manager().list_cameras()
+    refresh = request.args.get('refresh') in ('1', 'true', 'yes')
+    info = _manager().list_cameras(refresh=refresh)
     return jsonify({'success': True, **info})
 
 
