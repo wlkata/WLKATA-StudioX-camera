@@ -1,4 +1,6 @@
 {
+  "manifestVersion": 2,
+  "extensionApiVersion": 1,
   "name": "camera",
   "displayName": "Camera",
   "version": "1.0.0",
@@ -12,6 +14,18 @@
       "category": "Camera",
       "colour": "#4B8BBE",
       "files": ["blocks/blocks.json"]
+    },
+    "dynamicFields": {
+      "devices": {
+        "kind": "httpOptions",
+        "path": "/cameras",
+        "refreshPath": "/cameras?refresh=1",
+        "itemsKey": "cameras",
+        "labelKey": "name",
+        "valueKey": "id",
+        "refresh": "onOpen",
+        "cacheMs": 20000
+      }
     },
     "window": {
       "title": "Camera",

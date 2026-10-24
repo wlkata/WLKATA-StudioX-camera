@@ -6,8 +6,8 @@
       {
         "type": "field_dropdown",
         "name": "CAMERA",
-        "options": [["Camera", "0"]],
-        "source": "cameras"
+        "options": [["Choose camera", ""]],
+        "source": "devices"
       },
       {
         "type": "field_variable",
