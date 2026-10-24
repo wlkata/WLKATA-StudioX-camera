@@ -73,7 +73,15 @@
     "colour": 200,
     "tooltip": "Convert an image to RGB, BGR, gray, or HSV.",
     "pythonImports": ["import cv2"],
-    "python": "cv2.cvtColor({IMAGE}, cv2.COLOR_BGR2{MODE})"
+    "python": {
+      "select": {
+        "field": "MODE",
+        "cases": {
+          "BGR": "{IMAGE}"
+        },
+        "default": "cv2.cvtColor({IMAGE}, cv2.COLOR_BGR2{MODE})"
+      }
+    }
   },
   {
     "type": "camera_preview",
