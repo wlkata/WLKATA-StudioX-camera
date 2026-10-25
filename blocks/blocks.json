@@ -19,7 +19,18 @@
     "nextStatement": null,
     "colour": 200,
     "tooltip": "Open this camera once. Capture blocks read from the variable.",
-    "python": "{CAP} = __studiox_extensions['camera'].open_camera({CAMERA})\n"
+    "hardware": true,
+    "studiox": {
+      "python": "{CAP} = __studiox_extensions['camera'].open_camera({CAMERA})\n"
+    },
+    "portable": {
+      "imports": ["import cv2"],
+      "python": "{CAP} = cv2.VideoCapture({CAMERA})\n",
+      "cleanup": "{CAP}.release()"
+    },
+    "simulation": {
+      "python": "{CAP} = __studiox_simulation_placeholder('camera', 'open_camera', {CAMERA})\n"
+    }
   },
   {
     "type": "camera_capture",
@@ -49,7 +60,10 @@
     "colour": 200,
     "tooltip": "Resize an image to a width and height.",
     "pythonImports": ["import cv2"],
-    "python": "cv2.resize({IMAGE}, ({WIDTH}, {HEIGHT}))"
+    "python": "cv2.resize({IMAGE}, ({WIDTH}, {HEIGHT}))",
+    "simulation": {
+      "python": "__studiox_simulation_note('Camera resize is not applied during simulation', {IMAGE})"
+    }
   },
   {
     "type": "camera_convert",
@@ -72,6 +86,9 @@
     "colour": 200,
     "tooltip": "Convert an image to RGB, BGR, gray, or HSV.",
     "pythonImports": ["import cv2"],
+    "simulation": {
+      "python": "__studiox_simulation_note('Camera color conversion is not applied during simulation', {IMAGE})"
+    },
     "python": {
       "select": {
         "field": "MODE",
@@ -93,6 +110,7 @@
     "nextStatement": null,
     "colour": 200,
     "tooltip": "Show this frame in the Camera preview tab. This block does not add Python.",
+    "codegen": "debug",
     "pythonHidden": true,
     "python": "__studiox_preview({IMAGE}, {SLOT})\n"
   }

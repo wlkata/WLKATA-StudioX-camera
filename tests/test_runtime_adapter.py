@@ -172,8 +172,14 @@ class CameraAdapterTests(unittest.TestCase):
         self.assertEqual(manifest['contributes']['runtime']['python'], 'runtime/adapter.py')
         setup = next(block for block in blocks if block['type'] == 'camera_setup')
         self.assertNotIn('pythonImports', setup)
-        self.assertIn("__studiox_extensions['camera'].open_camera({CAMERA})", setup['python'])
-        self.assertNotIn('VideoCapture', setup['python'])
+        self.assertIn(
+            "__studiox_extensions['camera'].open_camera({CAMERA})",
+            setup['studiox']['python'],
+        )
+        self.assertIn('cv2.VideoCapture({CAMERA})', setup['portable']['python'])
+        self.assertIn('{CAP}.release()', setup['portable']['cleanup'])
+        preview = next(block for block in blocks if block['type'] == 'camera_preview')
+        self.assertEqual(preview.get('codegen'), 'debug')
 
 
 def _recording_request(ctx, handler):
