@@ -107,6 +107,7 @@ class CameraAdapterTests(unittest.TestCase):
         self.assertTrue(cap.grab())
         cap.release()
         cap.release()
+        adapter.close()
         disconnects = [call for call in ctx.calls if call[1] == '/disconnect']
         self.assertEqual(len(disconnects), 1)
         self.assertEqual(disconnects[0][2]['client'], payload['client'])
@@ -177,7 +178,9 @@ class CameraAdapterTests(unittest.TestCase):
             setup['studiox']['python'],
         )
         self.assertIn('cv2.VideoCapture({CAMERA})', setup['portable']['python'])
-        self.assertIn('{CAP}.release()', setup['portable']['cleanup'])
+        self.assertNotIn('cleanup', setup['portable'])
+        release = next(block for block in blocks if block['type'] == 'camera_release')
+        self.assertEqual(release['python'], '{CAP}.release()\n')
         preview = next(block for block in blocks if block['type'] == 'camera_preview')
         self.assertEqual(preview.get('codegen'), 'debug')
 
