@@ -151,7 +151,10 @@ class CameraAdapterTests(unittest.TestCase):
         ctx = FakeCtx()
         ctx.push(200, {'Content-Type': 'application/json'}, b'{"success": true}')
         ctx.push(404, {'Content-Type': 'application/json'}, b'{"error": "No camera frame"}')
-        ctx.push(200, {'Content-Type': 'image/jpeg'}, bytes(encoded))
+        ctx.push(200, {
+            'Content-Type': 'image/jpeg',
+            'X-Frame-Seq': '4',
+        }, bytes(encoded))
         adapter = self.mod.create_session(ctx)
         cap = adapter.open_camera(2)
         ok, frame = cap.read()
@@ -160,7 +163,16 @@ class CameraAdapterTests(unittest.TestCase):
         self.assertLess(int(abs(int(frame[0, 0, 0]) - 10)), 8)
         frame_calls = [call for call in ctx.calls if call[1].startswith('/frame')]
         self.assertEqual(len(frame_calls), 2)
-        self.assertEqual(frame_calls[0][1], '/frame?id=2')
+        self.assertEqual(frame_calls[0][1], '/frame?id=2&wait_ms=500')
+        self.assertNotIn('after=', frame_calls[1][1])
+        ctx.push(200, {
+            'Content-Type': 'image/jpeg',
+            'X-Frame-Seq': '5',
+        }, bytes(encoded))
+        ok, again = cap.read()
+        self.assertTrue(ok)
+        self.assertEqual(again.shape, (4, 4, 3))
+        self.assertIn('after=4', ctx.calls[-1][1])
         adapter.close()
         adapter.close()
         self.assertEqual([call[1] for call in ctx.calls].count('/disconnect'), 1)

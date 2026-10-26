@@ -11,7 +11,12 @@ that a property was applied.
 """
 
 import time
+import urllib.parse
 import uuid
+
+# How long one read may wait for a frame the camera has not produced yet.
+# Stop is checked before the request and again when it returns.
+_FRAME_WAIT_MS = 500
 
 
 def create_session(ctx):
@@ -46,6 +51,7 @@ class ManagedCameraCapture:
         self.index = index
         self.client = 'program-%s-%s' % (ctx.session_id, uuid.uuid4().hex[:8])
         self._held = False
+        self._seq = None
         self.last_error = ''
         acquired = False
         try:
@@ -103,13 +109,17 @@ class ManagedCameraCapture:
         """Placeholder. Returns False because the property was not applied."""
         return False
 
+    def _frame_path(self):
+        params = [('id', str(self.index)), ('wait_ms', str(_FRAME_WAIT_MS))]
+        if self._seq is not None:
+            params.append(('after', str(self._seq)))
+        return '/frame?' + urllib.parse.urlencode(params)
+
     def _fetch(self):
         self.ctx.check_aborted()
         self.last_error = ''
         try:
-            response = self.ctx.request(
-                'GET', '/frame?id=%d' % self.index, timeout=2,
-            )
+            response = self.ctx.request('GET', self._frame_path(), timeout=2)
         except Exception as exc:
             http = getattr(exc, 'response', None)
             if http is not None and getattr(http, 'status', None) == 404:
@@ -125,6 +135,12 @@ class ManagedCameraCapture:
         if frame is None:
             self.last_error = 'Preview could not decode a camera frame'
             return None
+        raw_seq = _header(response.headers, 'x-frame-seq')
+        if raw_seq is not None and raw_seq != '':
+            try:
+                self._seq = int(raw_seq)
+            except ValueError:
+                pass
         return frame
 
     def _disconnect(self):
@@ -171,11 +187,17 @@ def _decode_jpeg(raw):
     return frame
 
 
-def _content_type(headers):
+def _header(headers, name):
+    wanted = str(name).lower()
     for key, value in dict(headers or {}).items():
-        if str(key).lower() == 'content-type':
-            return str(value).lower()
-    return ''
+        if str(key).lower() == wanted:
+            return str(value)
+    return None
+
+
+def _content_type(headers):
+    value = _header(headers, 'content-type')
+    return value.lower() if value else ''
 
 
 def _payload_error(payload):

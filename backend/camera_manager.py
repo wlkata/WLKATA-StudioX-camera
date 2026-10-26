@@ -164,6 +164,7 @@ class _Camera:
         self.busy = False
         self.last_frame = None
         self.last_jpeg = None
+        self.frame_seq = 0
         self.width = 0
         self.height = 0
         self.drop_cap = None
@@ -348,13 +349,63 @@ class CameraManager:
             pass
         return True
 
+    def _connected_camera(self, index):
+        """Caller holds ``_io``. The open camera for ``index``, or None."""
+        if index is None:
+            index = self._active
+        if index is None:
+            return None
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return None
+        cam = self._cams.get(index)
+        if not cam or not cam.connected:
+            return None
+        return cam
+
+    def frame_seq(self, index=None):
+        with self._io:
+            cam = self._connected_camera(index)
+            if cam is None:
+                return None
+            return cam.frame_seq
+
+    def wait_jpeg(self, index=None, after=None, timeout=0.0):
+        """Return ``(jpeg, seq)`` for a connected camera.
+
+        ``after`` asks for a frame newer than that sequence. The wait is
+        bounded so a caller can stop without leaving a request parked on
+        the camera. On timeout the newest frame is returned even when it
+        is not new.
+        """
+        try:
+            limit = float(timeout or 0)
+        except (TypeError, ValueError):
+            limit = 0.0
+        if limit < 0:
+            limit = 0.0
+        if limit > 2.0:
+            limit = 2.0
+        deadline = time.monotonic() + limit
+        with self._idle:
+            while True:
+                cam = self._connected_camera(index)
+                if cam is None:
+                    return None, None
+                if cam.last_jpeg is not None and (after is None or cam.frame_seq > after):
+                    return cam.last_jpeg, cam.frame_seq
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    if cam.last_jpeg is not None:
+                        return cam.last_jpeg, cam.frame_seq
+                    return None, cam.frame_seq
+                self._idle.wait(timeout=remaining)
+
     def latest_jpeg(self, index=None):
         with self._io:
-            if index is None:
-                cam = self._cams.get(self._active) if self._active is not None else None
-            else:
-                cam = self._cams.get(int(index))
-            if not cam or not cam.connected:
+            cam = self._connected_camera(index)
+            if cam is None:
                 return None
             return cam.last_jpeg
 
@@ -489,6 +540,8 @@ class CameraManager:
                             cam.height, cam.width = frame.shape[:2]
                             if jpeg is not None:
                                 cam.last_jpeg = jpeg
+                                cam.frame_seq += 1
+                                self._idle.notify_all()
                 time.sleep(0.001)
         finally:
             with self._io:

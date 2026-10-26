@@ -74,12 +74,50 @@ def stream():
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
+def _optional_int(raw):
+    if raw is None or raw == '':
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _wait_seconds(raw):
+    value = _optional_int(raw)
+    if value is None or value < 0:
+        return 0.0
+    if value > 2000:
+        value = 2000
+    return value / 1000.0
+
+
 @blueprint.route('/frame')
 def frame():
-    jpeg = _manager().latest_jpeg(_camera_index())
+    """Latest JPEG. ``after`` plus ``wait_ms`` blocks until a newer frame.
+
+    Callers that omit both get the cached frame immediately. A tight
+    ``read()`` loop uses the wait so it does not download the same JPEG
+    faster than the camera produces frames.
+    """
+    index = _camera_index()
+    after_raw = request.args.get('after')
+    wait_raw = request.args.get('wait_ms')
+    if after_raw is None and wait_raw is None:
+        jpeg = _manager().latest_jpeg(index)
+        seq = _manager().frame_seq(index)
+    else:
+        jpeg, seq = _manager().wait_jpeg(
+            index,
+            after=_optional_int(after_raw),
+            timeout=_wait_seconds(wait_raw),
+        )
     if not jpeg:
         return jsonify({'success': False, 'error': 'No camera frame'}), 404
-    return Response(jpeg, mimetype='image/jpeg')
+    resp = Response(jpeg, mimetype='image/jpeg')
+    if seq is not None:
+        resp.headers['X-Frame-Seq'] = str(seq)
+    return resp
 
 
 @blueprint.route('/capture', methods=['POST'])
