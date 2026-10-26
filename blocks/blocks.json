@@ -111,6 +111,7 @@
     "tooltip": "Show this frame in the Camera preview tab. This block does not add Python.",
     "codegen": "debug",
     "pythonHidden": true,
+    "passComment": "preview block call",
     "python": "__studiox_preview({IMAGE}, {SLOT})\n"
   },
   {
