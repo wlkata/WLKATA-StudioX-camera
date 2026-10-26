@@ -7,13 +7,30 @@
   var statusEl = document.getElementById('cam-status');
   var frame = document.getElementById('cam-frame');
   var empty = document.getElementById('cam-empty');
-  var windowId = null;
+  var attempt = null;
+  var closing = false;
   var listRequest = null;
 
-  function setConnected(on) {
-    if (select) select.disabled = on;
-    if (connectBtn) connectBtn.disabled = on;
-    if (disconnectBtn) disconnectBtn.disabled = !on;
+  function newClientId() {
+    var suffix;
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      suffix = window.crypto.randomUUID();
+    } else {
+      suffix = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+    }
+    return 'window-' + suffix;
+  }
+
+  function setIdle() {
+    if (select) select.disabled = false;
+    if (connectBtn) connectBtn.disabled = false;
+    if (disconnectBtn) disconnectBtn.disabled = true;
+  }
+
+  function setBusy() {
+    if (select) select.disabled = true;
+    if (connectBtn) connectBtn.disabled = true;
+    if (disconnectBtn) disconnectBtn.disabled = false;
   }
 
   function setStatus(text) {
@@ -43,19 +60,22 @@
           select.appendChild(opt);
           names[String(cam.id)] = cam.name;
         });
-        if (windowId !== null) {
-          select.value = String(windowId);
-          setConnected(true);
-          setStatus('Showing ' + (names[String(windowId)] || ('camera ' + windowId)));
-          var stream = base + '/stream?id=' + windowId;
+        if (attempt && attempt.phase === 'connected') {
+          select.value = String(attempt.cameraId);
+          setBusy();
+          setStatus('Showing ' + (names[String(attempt.cameraId)] || ('camera ' + attempt.cameraId)));
+          var stream = base + '/stream?id=' + attempt.cameraId;
           if (frame && frame.getAttribute('data-stream') !== stream) {
             frame.setAttribute('data-stream', stream);
             frame.src = stream;
             showFrame(true);
           }
+        } else if (attempt && attempt.phase === 'pending') {
+          setBusy();
+          setStatus('Connecting…');
         } else {
           if (selected) select.value = selected;
-          setConnected(false);
+          setIdle();
           setStatus('No camera connected');
           if (frame) {
             frame.removeAttribute('src');
@@ -80,50 +100,75 @@
     showFrame(false);
   }
 
+  function sendDisconnect(target, keepalive) {
+    if (!target) return;
+    var options = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: Number(target.cameraId), client: target.client })
+    };
+    if (keepalive) options.keepalive = true;
+    try {
+      fetch(base + '/disconnect', options);
+    } catch (e) { /* ignore */ }
+  }
+
   connectBtn.addEventListener('click', function () {
+    if (closing || (attempt && attempt.phase === 'pending')) return;
+    if (attempt && attempt.phase === 'connected') return;
+    var cameraId = Number(select.value);
+    if (!isFinite(cameraId)) return;
+    var client = newClientId();
+    attempt = { cameraId: cameraId, client: client, phase: 'pending' };
+    setBusy();
+    setStatus('Connecting…');
     fetch(base + '/connect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: Number(select.value), client: 'window' })
+      body: JSON.stringify({ id: cameraId, client: client })
     })
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        if (!data.success) {
-          setStatus(data.error || 'Connect failed');
-        } else {
-          windowId = String(data.id);
+        if (closing || !attempt || attempt.client !== client) return;
+        if (!data || !data.success) {
+          attempt = null;
+          setIdle();
+          setStatus((data && data.error) || 'Connect failed');
+          return;
         }
+        attempt.phase = 'connected';
+        if (data.id != null) attempt.cameraId = Number(data.id);
         refreshList(true);
       })
-      .catch(function () { setStatus('Connect failed'); });
+      .catch(function () {
+        if (closing || !attempt || attempt.client !== client) return;
+        attempt = null;
+        setIdle();
+        setStatus('Connect failed');
+      });
   });
 
   disconnectBtn.addEventListener('click', function () {
-    var id = windowId;
-    windowId = null;
+    var current = attempt;
+    attempt = null;
     stopStream();
-    setConnected(false);
+    setIdle();
     setStatus('No camera connected');
-    if (id === null) return;
-    fetch(base + '/disconnect', {
+    if (!current) return;
+    var options = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: Number(id), client: 'window' })
-    }).then(function () {
-      refreshList(true);
-    });
+      body: JSON.stringify({ id: Number(current.cameraId), client: current.client })
+    };
+    fetch(base + '/disconnect', options).then(function () {
+      if (!attempt) refreshList(true);
+    }).catch(function () {});
   });
 
+  // keepalive covers a normal close. A renderer crash can still skip this.
   window.addEventListener('beforeunload', function () {
-    if (windowId === null) return;
-    try {
-      fetch(base + '/disconnect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: Number(windowId), client: 'window' }),
-        keepalive: true
-      });
-    } catch (e) { /* ignore */ }
+    closing = true;
+    sendDisconnect(attempt, true);
   });
 
   refreshList(true);

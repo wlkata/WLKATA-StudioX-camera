@@ -27,6 +27,19 @@ def _lifecycle(event, **fields):
     print('[camera] ' + ' '.join(parts), file=stream, flush=True)
 
 
+_CANCEL_LIMIT = 256
+
+
+def _is_window_client(client):
+    """Camera-window holder. Program clients start with ``program``, not ``window``."""
+    name = str(client)
+    return name == 'window' or name.startswith('window-')
+
+
+def _cancelled_acquire():
+    return {'success': False, 'error': 'Connection cancelled', 'cancelled': True}
+
+
 _CONVERT = {
     'BGR': None,
     'RGB': cv2.COLOR_BGR2RGB,
@@ -175,6 +188,11 @@ class CameraManager:
         self._names = None
         self._names_at = 0.0
         self._previews = {}
+        # Client ids whose disconnect arrived before acquire committed.
+        # In-flight ids are never discarded, so a slow open cannot revive them.
+        self._cancelled = set()
+        self._cancel_order = []
+        self._inflight = set()
 
     def list_cameras(self, refresh=False):
         """Return the cached device list.
@@ -199,20 +217,29 @@ class CameraManager:
                 'id': index,
                 'name': name,
                 'in_use': bool(holders),
-                'window': 'window' in holders,
-                'program': any(str(h).startswith('program') for h in holders),
+                'window': any(_is_window_client(holder) for holder in holders),
+                'program': any(str(holder).startswith('program') for holder in holders),
             })
         return {'cameras': cameras}
 
     def acquire(self, index, client):
-        """Register ``client`` as a user of this camera. Open the device once."""
+        """Register ``client`` as a user of this camera. Open the device once.
+
+        A disconnect for this same client that arrives before the holder is
+        recorded cancels the attempt, including while the device is opening.
+        """
         index = int(index)
         client = str(client or 'window')
         with self._io:
+            self._inflight.add(client)
+            if self._take_cancel_locked(client):
+                self._inflight.discard(client)
+                return _cancelled_acquire()
             existing = self._cams.get(index)
             if existing and existing.connected and existing.cap is not None:
                 existing.holders.add(client)
                 self._active = index
+                self._inflight.discard(client)
                 _lifecycle('acquire', index=index, client=client, holders=len(existing.holders))
                 return {'success': True, 'id': index, 'name': existing.name}
         info = self.list_cameras(refresh=True)
@@ -222,26 +249,34 @@ class CameraManager:
                 name = item['name']
                 break
         cap = _open_capture(index)
-        if cap is None:
-            _lifecycle('acquire-failed', index=index, client=client)
-            return {'success': False, 'error': 'Could not open camera %d' % index}
         extra = None
+        cancelled = False
         with self._io:
-            existing = self._cams.get(index)
-            if existing and existing.connected and existing.cap is not None:
-                existing.holders.add(client)
-                self._active = index
-                name = existing.name
+            self._inflight.discard(client)
+            if self._take_cancel_locked(client):
+                cancelled = True
                 extra = cap
+            elif cap is None:
+                _lifecycle('acquire-failed', index=index, client=client)
+                return {'success': False, 'error': 'Could not open camera %d' % index}
             else:
-                cam = _Camera(index, name)
-                cam.cap = cap
-                cam.connected = True
-                cam.holders = set([client])
-                self._cams[index] = cam
-                self._active = index
+                existing = self._cams.get(index)
+                if existing and existing.connected and existing.cap is not None:
+                    existing.holders.add(client)
+                    self._active = index
+                    name = existing.name
+                    extra = cap
+                else:
+                    cam = _Camera(index, name)
+                    cam.cap = cap
+                    cam.connected = True
+                    cam.holders = set([client])
+                    self._cams[index] = cam
+                    self._active = index
         if extra is not None:
-            _release_capture(extra, index, 'duplicate-open')
+            _release_capture(extra, index, 'cancelled' if cancelled else 'duplicate-open')
+        if cancelled:
+            return _cancelled_acquire()
         _lifecycle('acquire', index=index, client=client, holders=len(self._cams[index].holders))
         self._ensure_reader()
         return {'success': True, 'id': index, 'name': name}
@@ -261,6 +296,9 @@ class CameraManager:
         with self._idle:
             cam = self._cams.get(index)
             if not cam or client not in cam.holders:
+                # The connect may still be opening. Remember the id so acquire
+                # does not commit a holder after this disconnect.
+                self._remember_cancel_locked(client)
                 return {'success': True}
             cam.holders.discard(client)
             _lifecycle('release-client', index=index, client=client, holders=len(cam.holders))
@@ -284,6 +322,31 @@ class CameraManager:
             self._idle.notify_all()
         _release_capture(to_release, index, 'last-client')
         return {'success': True}
+
+    def _remember_cancel_locked(self, client):
+        if client in self._cancelled:
+            return
+        self._cancelled.add(client)
+        self._cancel_order.append(client)
+        skipped = 0
+        while len(self._cancelled) > _CANCEL_LIMIT and self._cancel_order and skipped < len(self._cancel_order):
+            old = self._cancel_order.pop(0)
+            if old in self._inflight:
+                self._cancel_order.append(old)
+                skipped += 1
+                continue
+            self._cancelled.discard(old)
+            skipped = 0
+
+    def _take_cancel_locked(self, client):
+        if client not in self._cancelled:
+            return False
+        self._cancelled.discard(client)
+        try:
+            self._cancel_order.remove(client)
+        except ValueError:
+            pass
+        return True
 
     def latest_jpeg(self, index=None):
         with self._io:
