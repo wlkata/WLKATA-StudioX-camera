@@ -6,6 +6,9 @@
   "version": "1.0.0",
   "description": "Camera manager, live preview window, and image blocks.",
   "permissions": ["camera"],
+  "pythonDependencies": {
+    "blockly": ["opencv-python>=4.8"]
+  },
   "contributes": {
     "backend": {
       "main": "backend/main.py"
