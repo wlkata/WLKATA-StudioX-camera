@@ -51,8 +51,13 @@ class ManagedCameraCapture:
         self.index = index
         self.client = 'program-%s-%s' % (ctx.session_id, uuid.uuid4().hex[:8])
         self._held = False
+        self._needs_disconnect = False
         self._seq = None
         self.last_error = ''
+        # Register before /connect: Stop may interrupt the constructor or the
+        # caller before this capture reaches the adapter's _captures list.
+        self.ctx.add_cleanup(self.release)
+        self._needs_disconnect = True
         acquired = False
         try:
             response = self.ctx.request('POST', '/connect', json={
@@ -69,10 +74,12 @@ class ManagedCameraCapture:
         finally:
             self._held = bool(acquired)
             if not acquired:
-                self._disconnect()
+                self.release()
 
     def read(self):
         """Return ``(ok, frame)``. Wait briefly for the first JPEG after open."""
+        if not self._held:
+            return False, None
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             self.ctx.check_aborted()
@@ -88,10 +95,11 @@ class ManagedCameraCapture:
         return bool(self._held)
 
     def release(self):
-        if not self._held:
-            return
         self._held = False
-        self._disconnect()
+        # Local closure and backend acknowledgement are different states.
+        # Keep cleanup pending if Stop interrupts us or the request fails.
+        if self._needs_disconnect and self._disconnect():
+            self._needs_disconnect = False
 
     def grab(self):
         """Placeholder. True only means this session still holds the device."""
@@ -145,12 +153,14 @@ class ManagedCameraCapture:
 
     def _disconnect(self):
         try:
-            self.ctx.request('POST', '/disconnect', json={
+            response = self.ctx.request('POST', '/disconnect', json={
                 'id': self.index,
                 'client': self.client,
-            }, ignore_abort=True)
+            }, timeout=5, ignore_abort=True)
+            payload = response.json()
+            return bool(isinstance(payload, dict) and payload.get('success'))
         except Exception:
-            return
+            return False
 
 
 def _device_id(index):

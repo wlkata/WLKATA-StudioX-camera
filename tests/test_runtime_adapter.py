@@ -39,6 +39,15 @@ class FakeCtx:
         self.errors = []
         self.aborted = False
         self._queue = []
+        self.cleanups = []
+
+    def add_cleanup(self, callback):
+        self.cleanups.append(callback)
+
+    def close_all(self, adapter):
+        adapter.close()
+        for callback in reversed(self.cleanups):
+            callback()
 
     def check_aborted(self):
         if self.aborted:

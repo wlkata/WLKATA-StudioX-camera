@@ -12,6 +12,30 @@ Install `requirements.txt` into an environment named `camera`. That environment 
 
 Blockly `camera_setup` generates `__studiox_extensions['camera'].open_camera(...)`. Capture is still `cap.read()[1]`. Resize and convert still call OpenCV. BGR is the image unchanged.
 
+Program cleanup is registered before the connection request, so Stop can release
+a camera even if it interrupts setup before the capture is returned. Disconnect
+remains pending until the backend acknowledges it; a failed or interrupted
+release can be retried by session cleanup.
+
+Opening a device waits for its previous read and native release to finish.
+Concurrent connects share one capture. If a previous operation stays blocked for
+five seconds, connect returns a busy error rather than reporting a connection
+that cannot produce frames.
+
+## Tests
+
+Run with the Camera environment's Python:
+
+```bash
+python -B -m unittest discover -s tests -p 'test_*.py'
+node tests/test_window_attempts.js
+```
+
+Tests cover Stop at adapter execution boundaries, disconnect retries, concurrent
+connects, blocked reads and releases, and twenty rapid Run/Stop cycles with real
+JPEG encoding/decoding and simulated camera captures. Physical camera testing
+is still needed for platform and driver behavior.
+
 ## Development and install
 
 This repository is the source of truth. StudioX prefers `~/.wlkata-studiox/extensions/camera` over a checkout linked from the app. From the Blockly repo, copy a tested commit in and restart StudioX:

@@ -28,6 +28,7 @@ def _lifecycle(event, **fields):
 
 
 _CANCEL_LIMIT = 256
+_ACQUIRE_WAIT_SECONDS = 5.0
 
 
 def _is_window_client(client):
@@ -194,6 +195,10 @@ class CameraManager:
         self._cancelled = set()
         self._cancel_order = []
         self._inflight = set()
+        # A device cannot be reopened until its previous read AND release finish.
+        # Keep opening reserved too, so concurrent clients share one capture.
+        self._opening = set()
+        self._closing = set()
 
     def list_cameras(self, refresh=False):
         """Return the cached device list.
@@ -224,63 +229,77 @@ class CameraManager:
         return {'cameras': cameras}
 
     def acquire(self, index, client):
-        """Register ``client`` as a user of this camera. Open the device once.
+        """Share an open capture, or wait until the previous device operation ends.
 
-        A disconnect for this same client that arrives before the holder is
-        recorded cancels the attempt, including while the device is opening.
+        Waiting is bounded. A camera still closing is reported as busy rather
+        than claiming a connection that cannot produce a first frame.
         """
         index = int(index)
         client = str(client or 'window')
-        with self._io:
+        deadline = time.monotonic() + _ACQUIRE_WAIT_SECONDS
+        opening = False
+        cap = None
+        with self._idle:
             self._inflight.add(client)
-            if self._take_cancel_locked(client):
-                self._inflight.discard(client)
-                return _cancelled_acquire()
-            existing = self._cams.get(index)
-            if existing and existing.connected and existing.cap is not None:
-                existing.holders.add(client)
-                self._active = index
-                self._inflight.discard(client)
-                _lifecycle('acquire', index=index, client=client, holders=len(existing.holders))
-                return {'success': True, 'id': index, 'name': existing.name}
-        info = self.list_cameras(refresh=True)
-        name = 'Camera %d' % index
-        for item in info['cameras']:
-            if item['id'] == index:
-                name = item['name']
-                break
-        cap = _open_capture(index)
-        extra = None
-        cancelled = False
-        with self._io:
-            self._inflight.discard(client)
-            if self._take_cancel_locked(client):
-                cancelled = True
-                extra = cap
-            elif cap is None:
-                _lifecycle('acquire-failed', index=index, client=client)
-                return {'success': False, 'error': 'Could not open camera %d' % index}
-            else:
-                existing = self._cams.get(index)
-                if existing and existing.connected and existing.cap is not None:
-                    existing.holders.add(client)
-                    self._active = index
-                    name = existing.name
-                    extra = cap
-                else:
+        try:
+            with self._idle:
+                while True:
+                    if self._take_cancel_locked(client):
+                        return _cancelled_acquire()
+                    existing = self._cams.get(index)
+                    if existing and existing.connected and existing.cap is not None:
+                        existing.holders.add(client)
+                        self._active = index
+                        name = existing.name
+                        break
+                    if index not in self._opening and index not in self._closing:
+                        self._opening.add(index)
+                        opening = True
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return {
+                            'success': False,
+                            'error': 'Camera %d is still busy. Try again in a moment.' % index,
+                        }
+                    self._idle.wait(timeout=remaining)
+
+            if opening:
+                info = self.list_cameras(refresh=True)
+                name = 'Camera %d' % index
+                for item in info['cameras']:
+                    if item['id'] == index:
+                        name = item['name']
+                        break
+                cap = _open_capture(index)
+                with self._idle:
+                    if self._take_cancel_locked(client):
+                        return _cancelled_acquire()
+                    if cap is None:
+                        _lifecycle('acquire-failed', index=index, client=client)
+                        return {'success': False, 'error': 'Could not open camera %d' % index}
                     cam = _Camera(index, name)
                     cam.cap = cap
                     cam.connected = True
                     cam.holders = set([client])
                     self._cams[index] = cam
                     self._active = index
-        if extra is not None:
-            _release_capture(extra, index, 'cancelled' if cancelled else 'duplicate-open')
-        if cancelled:
-            return _cancelled_acquire()
-        _lifecycle('acquire', index=index, client=client, holders=len(self._cams[index].holders))
-        self._ensure_reader()
-        return {'success': True, 'id': index, 'name': name}
+                    cap = None  # Ownership has moved into the camera record.
+
+            _lifecycle('acquire', index=index, client=client)
+            self._ensure_reader()
+            return {'success': True, 'id': index, 'name': name}
+        finally:
+            try:
+                # Cancelled opens must finish releasing before another open.
+                if cap is not None:
+                    _release_capture(cap, index, 'cancelled')
+            finally:
+                with self._idle:
+                    if opening:
+                        self._opening.discard(index)
+                    self._inflight.discard(client)
+                    self._idle.notify_all()
 
     def release(self, index, client):
         """Drop one client. Close the device only when nobody remains.
@@ -300,6 +319,7 @@ class CameraManager:
                 # The connect may still be opening. Remember the id so acquire
                 # does not commit a holder after this disconnect.
                 self._remember_cancel_locked(client)
+                self._idle.notify_all()
                 return {'success': True}
             cam.holders.discard(client)
             _lifecycle('release-client', index=index, client=client, holders=len(cam.holders))
@@ -310,10 +330,12 @@ class CameraManager:
             cam.cap = None
             cam.last_frame = None
             cam.last_jpeg = None
-            if cam.busy and cap is not None:
-                cam.drop_cap = cap
-            else:
-                to_release = cap
+            if cap is not None:
+                self._closing.add(index)
+                if cam.busy:
+                    cam.drop_cap = cap
+                else:
+                    to_release = cap
             if self._active == index:
                 self._active = None
                 for other, conn in self._cams.items():
@@ -321,8 +343,17 @@ class CameraManager:
                         self._active = other
                         break
             self._idle.notify_all()
-        _release_capture(to_release, index, 'last-client')
+        if to_release is not None:
+            self._finish_close(to_release, index, 'last-client')
         return {'success': True}
+
+    def _finish_close(self, cap, index, reason):
+        try:
+            _release_capture(cap, index, reason)
+        finally:
+            with self._idle:
+                self._closing.discard(index)
+                self._idle.notify_all()
 
     def _remember_cancel_locked(self, client):
         if client in self._cancelled:
@@ -524,7 +555,7 @@ class CameraManager:
                                 cam.drop_cap = None
                             self._idle.notify_all()
                     if drop is not None:
-                        _release_capture(drop, cam.index, 'reader')
+                        self._finish_close(drop, cam.index, 'reader')
                         continue
                     if not ok or frame is None:
                         continue
