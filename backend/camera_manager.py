@@ -5,6 +5,8 @@ connected, and one of them is active. The preview window and the capture
 block both read that active camera.
 """
 
+from concurrent.futures import Future
+
 import json
 import platform
 import subprocess
@@ -29,6 +31,9 @@ def _lifecycle(event, **fields):
 
 _CANCEL_LIMIT = 256
 _ACQUIRE_WAIT_SECONDS = 5.0
+# OS discovery on macOS has a 12-second subprocess timeout. Stay below the
+# 15-second camera-list timeout used by CV Pick.
+_DISCOVERY_WAIT_SECONDS = 14.0
 
 
 def _is_window_client(client):
@@ -189,6 +194,8 @@ class CameraManager:
         self._thread = None
         self._names = None
         self._names_at = 0.0
+        self._discovery_lock = threading.Lock()
+        self._discovery = None
         self._previews = {}
         # Client ids whose disconnect arrived before acquire committed.
         # In-flight ids are never discarded, so a slow open cannot revive them.
@@ -200,18 +207,55 @@ class CameraManager:
         self._opening = set()
         self._closing = set()
 
-    def list_cameras(self, refresh=False):
-        """Return the cached device list.
+    def start_discovery(self, refresh=False):
+        """Start OS enumeration in the background, sharing an in-flight scan.
 
-        ``refresh=True`` asks the OS for names. That is discovery, not a
-        capture. An ordinary list call never opens a camera and never
-        repeats discovery on its own.
+        Backend registration starts the initial scan. Repeated startup calls
+        reuse it, including a completed empty result. Explicit refresh can
+        start another scan once the previous one finishes.
+        """
+        with self._discovery_lock:
+            current = self._discovery
+            if current is not None and (not refresh or not current.done()):
+                return current
+            result = Future()
+            self._discovery = result
+            worker = threading.Thread(
+                target=self._discover, args=(result,),
+                name='camera-discovery', daemon=True)
+            try:
+                worker.start()
+            except Exception as exc:
+                result.set_exception(exc)
+            return result
+
+    def _discover(self, result):
+        try:
+            names = _platform_names() or []
+            with self._discovery_lock:
+                self._names = names
+                self._names_at = time.monotonic()
+            _lifecycle('enumerate', count=len(names))
+            result.set_result(names)
+        except Exception as exc:
+            result.set_exception(exc)
+
+    def list_cameras(self, refresh=False):
+        """Read the cache after any pending startup or refresh scan completes.
+
+        Enumeration never opens a capture. Ordinary requests share the first
+        scan rather than reporting its unfinished cache as an empty result.
+        Explicit refresh joins an in-flight scan or starts a new one.
         """
         if refresh:
-            self._names = _platform_names() or []
-            self._names_at = time.monotonic()
-            _lifecycle('enumerate', count=len(self._names))
-        names = self._names or []
+            discovery = self.start_discovery(refresh=True)
+        else:
+            with self._discovery_lock:
+                discovery = self._discovery
+        if discovery is not None:
+            names = discovery.result(timeout=_DISCOVERY_WAIT_SECONDS)
+        else:
+            names = self._names or []
         # Only cameras the OS reports. Padding to 3 invented a dead "Camera 2".
         count = len(names)
         cameras = []

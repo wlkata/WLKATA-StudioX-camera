@@ -13,10 +13,23 @@ def _manager():
     return CameraManager.get_instance()
 
 
+def on_start():
+    # StudioX waits for this Future before starting dependent backends.
+    return _manager().start_discovery()
+
+
 @blueprint.route('/cameras')
 def cameras():
     refresh = request.args.get('refresh') in ('1', 'true', 'yes')
-    info = _manager().list_cameras(refresh=refresh)
+    try:
+        info = _manager().list_cameras(refresh=refresh)
+    except TimeoutError:
+        return jsonify({
+            'success': False,
+            'error': 'Camera discovery is still running. Please try again.',
+        }), 503
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 503
     return jsonify({'success': True, **info})
 
 

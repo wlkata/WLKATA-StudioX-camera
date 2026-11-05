@@ -155,7 +155,10 @@ class FrameRouteTests(unittest.TestCase):
         from flask import Flask
         import main as camera_main
         app = Flask(__name__)
-        app.register_blueprint(camera_main.blueprint)
+        with mock.patch.object(camera_manager, '_platform_names', return_value=[]):
+            app.register_blueprint(camera_main.blueprint)
+            camera_main.on_start().result(timeout=1)
+            self.mgr.list_cameras()
         self.client = app.test_client()
 
     def tearDown(self):
